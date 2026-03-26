@@ -1,9 +1,12 @@
 import asyncio
 import sys
 import os
+from pathlib import Path
 
-# Add the parent directory to sys.path so 'app' can be imported
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Fix: Ensure 'backend' directory is in sys.path for runtime
+backend_dir = Path(__file__).resolve().parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 
 from app.db.database import engine, Base
 from app.db import models

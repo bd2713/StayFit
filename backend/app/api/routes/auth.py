@@ -13,6 +13,10 @@ from app.schemas.user import User as UserSchema, UserCreate, Token
 
 router = APIRouter()
 
+@router.get("/health")
+async def health_check():
+    return {"status": "ok", "version": "1.1.0", "persistence": "enabled"}
+
 @router.post("/register", response_model=UserSchema)
 async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any:
     """

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
 import api from '../api/client';
 import { Dumbbell, Loader2, PlayCircle, Clock } from 'lucide-react';
@@ -8,11 +8,13 @@ export default function WorkoutPlanner() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
-    React.useEffect(() => {
+    useEffect(() => {
         const fetchLatestWorkout = async () => {
+            console.log("Checking for latest workout plan...");
             try {
                 const res = await api.get('plans/workout/latest');
                 if (res.data && res.data.plan_json) {
+                    console.log("Found existing workout plan.");
                     setPlan(res.data.plan_json);
                 }
             } catch (err) {

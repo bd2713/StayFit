@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
 import api from '../api/client';
 import { ChefHat, Loader2, Calendar } from 'lucide-react';
@@ -10,11 +10,13 @@ export default function DietPlanner() {
     const [error, setError] = useState('');
     const [targetCalories, setTargetCalories] = useState(2000);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const fetchLatestPlan = async () => {
+            console.log("Checking for latest diet plan...");
             try {
                 const res = await api.get('plans/diet/latest');
                 if (res.data && res.data.plan_json) {
+                    console.log("Found existing diet plan.");
                     setPlan(res.data.plan_json);
                     if (res.data.daily_calories_target) {
                         setTargetCalories(res.data.daily_calories_target);

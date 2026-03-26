@@ -4,6 +4,8 @@ import api from '../api/client';
 import { ChefHat, Loader2, Calendar } from 'lucide-react';
 import { format, startOfWeek } from 'date-fns';
 
+// Deployment Timestamp: 2026-03-26 - v1.1 - Persistence Fix
+
 export default function DietPlanner() {
     const [plan, setPlan] = useState(null);
     const [loading, setLoading] = useState(false);

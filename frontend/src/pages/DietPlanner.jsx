@@ -52,7 +52,7 @@ export default function DietPlanner() {
         <Layout>
             <div className="mb-8 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-900">AI Diet Planner</h1>
+                    <h1 className="text-3xl font-bold text-gray-900">AI Diet Planner v1.1</h1>
                     <p className="mt-2 text-gray-600">Personalized hyper-local meals based on your metabolism & goals.</p>
                 </div>
                 <div className="flex gap-3 items-center bg-white p-2 rounded-xl shadow-sm border border-gray-100">

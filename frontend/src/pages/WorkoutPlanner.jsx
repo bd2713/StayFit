@@ -8,6 +8,21 @@ export default function WorkoutPlanner() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
+    React.useEffect(() => {
+        const fetchLatestWorkout = async () => {
+            try {
+                const res = await api.get('plans/workout/latest');
+                if (res.data && res.data.plan_json) {
+                    setPlan(res.data.plan_json);
+                }
+            } catch (err) {
+                // 404 is expected if they haven't generated a plan yet
+                console.log("No existing workout plan found.");
+            }
+        };
+        fetchLatestWorkout();
+    }, []);
+
     const generatePlan = async () => {
         setLoading(true);
         setError('');

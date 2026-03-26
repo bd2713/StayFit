@@ -10,6 +10,24 @@ export default function DietPlanner() {
     const [error, setError] = useState('');
     const [targetCalories, setTargetCalories] = useState(2000);
 
+    React.useEffect(() => {
+        const fetchLatestPlan = async () => {
+            try {
+                const res = await api.get('plans/diet/latest');
+                if (res.data && res.data.plan_json) {
+                    setPlan(res.data.plan_json);
+                    if (res.data.daily_calories_target) {
+                        setTargetCalories(res.data.daily_calories_target);
+                    }
+                }
+            } catch (err) {
+                // 404 is expected if they haven't generated a plan yet
+                console.log("No existing diet plan found.");
+            }
+        };
+        fetchLatestPlan();
+    }, []);
+
     const generatePlan = async () => {
         setLoading(true);
         setError('');

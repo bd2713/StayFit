@@ -39,6 +39,25 @@ async def generate_diet(
     await db.refresh(diet_plan)
     return diet_plan
 
+@router.get("/diet/latest", response_model=DietPlanSchema)
+async def get_latest_diet(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Get the latest diet plan for the user.
+    """
+    result = await db.execute(
+        select(DietPlan)
+        .where(DietPlan.user_id == current_user.id)
+        .order_by(DietPlan.created_at.desc())
+        .limit(1)
+    )
+    plan = result.scalars().first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="No diet plan found")
+    return plan
+
 @router.post("/workout", response_model=WorkoutPlanSchema)
 async def generate_workout(
     *,
@@ -63,6 +82,25 @@ async def generate_workout(
     await db.commit()
     await db.refresh(workout_plan)
     return workout_plan
+
+@router.get("/workout/latest", response_model=WorkoutPlanSchema)
+async def get_latest_workout(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Get the latest workout plan for the user.
+    """
+    result = await db.execute(
+        select(WorkoutPlan)
+        .where(WorkoutPlan.user_id == current_user.id)
+        .order_by(WorkoutPlan.created_at.desc())
+        .limit(1)
+    )
+    plan = result.scalars().first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="No workout plan found")
+    return plan
 
 @router.post("/scan")
 async def scan_nutrition(

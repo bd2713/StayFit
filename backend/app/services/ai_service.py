@@ -1,8 +1,11 @@
 import google.generativeai as genai
 import json
+import logging
 from groq import Groq
 from app.core.config import settings
 from app.db.models import UserProfile, HealthMetric
+
+logger = logging.getLogger(__name__)
 
 # Global client cache
 _gemini_model = None
@@ -11,20 +14,17 @@ _groq_client = None
 def get_groq_client():
     global _groq_client
     if not _groq_client and settings.GROQ_API_KEY:
-        print("--- Initializing Groq Client ---")
         _groq_client = Groq(api_key=settings.GROQ_API_KEY)
     return _groq_client
 
 def get_gemini_model():
     global _gemini_model
     if not _gemini_model and settings.GEMINI_API_KEY:
-        print("--- Initializing Gemini Model ---")
         genai.configure(api_key=settings.GEMINI_API_KEY)
-        _gemini_model = genai.GenerativeModel('gemini-2.0-flash-lite')
+        _gemini_model = genai.GenerativeModel('gemini-1.5-flash')
     return _gemini_model
 
 def get_friendly_error(e: Exception) -> str:
-    """Helper to convert complex API errors into friendly guidance."""
     error_str = str(e)
     if "429" in error_str or "quota" in error_str.lower():
         return "I'm currently assisting many users on the free tier! Please wait about 30-60 seconds and try again so I can give you my full attention. 🧘‍♂️"
@@ -33,40 +33,43 @@ def get_friendly_error(e: Exception) -> str:
     return f"I encountered a small hiccup: {error_str}"
 
 async def _generate_content(prompt: str, system_message: str = "You are a helpful assistant.") -> str:
-    """Internal helper to route requests to Groq (preferred) or Gemini."""
-    groq = get_groq_client()
-    # Preferred: Groq (Higher rate limits on free tier)
-    if groq:
-        try:
-            print(f"DEBUG: Using Groq (Llama 3.3 70B)...")
-            chat_completion = groq.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt}
-                ],
-                model="llama-3.3-70b-versatile",
-            )
-            return chat_completion.choices[0].message.content
-        except Exception as e:
-            print(f"Groq primary error: {e}")
-            # fall through to Gemini if Groq fails
+    last_error = None
     
-    # Fallback: Gemini
+    # 1. Try Groq with active models
+    groq = get_groq_client()
+    if groq:
+        # Try primary recommended Groq models
+        for model_name in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "llama-3.3-70b-specdec"]:
+            try:
+                chat_completion = groq.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": prompt}
+                    ],
+                    model=model_name,
+                )
+                return chat_completion.choices[0].message.content
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Groq model {model_name} failed: {e}")
+                continue
+
+    # 2. Fallback to Gemini
     gemini = get_gemini_model()
     if gemini:
         try:
-            print(f"DEBUG: Using Gemini Fallback...")
             response = gemini.generate_content(f"{system_message}\n\n{prompt}")
-            if hasattr(response, 'parts') and response.parts:
+            if hasattr(response, 'text') and response.text:
                 return response.text
-            return "Unable to generate response via Gemini."
         except Exception as e:
-            raise e
-            
-    raise Exception("No AI provider configured. Please add GROQ_API_KEY or GEMINI_API_KEY to your .env file.")
+            last_error = e
+            logger.warning(f"Gemini fallback failed: {e}")
+
+    if last_error:
+        raise last_error
+    raise Exception("No working AI provider configured. Please check your GROQ_API_KEY or GEMINI_API_KEY.")
 
 def estimate_metabolism(profile: UserProfile, latest_metric: HealthMetric = None) -> float:
-    """Feature A: Basic calculation for BMR with simple multipliers based on profile/metric."""
     weight = latest_metric.weight if latest_metric else profile.weight
     s = 5 if profile.gender.lower() in ['male', 'm'] else -161
     bmr = 10 * weight + 6.25 * profile.height - 5 * profile.age + s
@@ -110,9 +113,9 @@ async def generate_diet_plan(profile: UserProfile, calories_target: int) -> dict
             text = text[7:-3]
         elif text.startswith('```'):
             text = text[3:-3]
-        return json.loads(text)
+        return json.loads(text.strip())
     except Exception as e:
-        print(f"Diet Generation Error: {e}")
+        logger.error(f"Diet Generation Error: {e}")
         return {"error": get_friendly_error(e)}
 
 async def generate_workout_plan(profile: UserProfile) -> dict:
@@ -141,9 +144,9 @@ async def generate_workout_plan(profile: UserProfile) -> dict:
             text = text[7:-3]
         elif text.startswith('```'):
             text = text[3:-3]
-        return json.loads(text)
+        return json.loads(text.strip())
     except Exception as e:
-        print(f"Workout Generation Error: {e}")
+        logger.error(f"Workout Generation Error: {e}")
         return {"error": get_friendly_error(e)}
 
 async def analyze_nutrition(food_description: str) -> dict:
@@ -170,13 +173,12 @@ async def analyze_nutrition(food_description: str) -> dict:
             text = text[7:-3]
         elif text.startswith('```'):
             text = text[3:-3]
-        return json.loads(text)
+        return json.loads(text.strip())
     except Exception as e:
-        print(f"Nutrition Analysis Error: {e}")
+        logger.error(f"Nutrition Analysis Error: {e}")
         return {"error": get_friendly_error(e)}
 
 async def chat_with_coach(profile: UserProfile, message: str) -> str:
-    # Build a detailed context string to make the AI truly aware of who it's talking to
     context = (
         f"The user is {profile.age} years old, {profile.gender}. "
         f"Height: {profile.height}cm, Weight: {profile.weight}kg. "
@@ -191,13 +193,11 @@ async def chat_with_coach(profile: UserProfile, message: str) -> str:
     
     system_msg = (
         "You are StayFit, a holistic and highly intelligent AI Health Coach. "
-        "You have access to the user's biological profile and goals. "
-        "Use this data to provide highly personalized, scientifically-accurate, and encouraging advice. "
-        "If they ask about their own stats (like height or goal), you should know them."
+        "Use this data to provide highly personalized, scientifically-accurate, and encouraging advice."
     )
     
     try:
         return await _generate_content(prompt, system_msg)
     except Exception as e:
-        print(f"Chat Error: {e}")
+        logger.error(f"Chat Error: {e}")
         return get_friendly_error(e)

@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import json
 import logging
+import re
 from groq import Groq
 from app.core.config import settings
 from app.db.models import UserProfile, HealthMetric
@@ -27,28 +28,62 @@ def get_gemini_model():
 def get_friendly_error(e: Exception) -> str:
     error_str = str(e)
     if "429" in error_str or "quota" in error_str.lower():
-        return "I'm currently assisting many users on the free tier! Please wait about 30-60 seconds and try again so I can give you my full attention. 🧘‍♂️"
+        return "I'm currently assisting many users on the free tier! Please wait about 30-60 seconds and try again. 🧘‍♂️"
     if "500" in error_str:
         return "The AI service is a bit overwhelmed right now. Please try again in a moment!"
     return f"I encountered a small hiccup: {error_str}"
 
-async def _generate_content(prompt: str, system_message: str = "You are a helpful assistant.") -> str:
+def parse_json_safely(text: str) -> dict:
+    """Robust parser that handles markdown formatting, preambles, and minor syntax anomalies."""
+    if not text:
+        raise ValueError("Empty response received from AI model.")
+        
+    text = text.strip()
+    
+    # Strip markdown code blocks if present
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+    
+    # Extract the outermost JSON object
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        text = match.group(0)
+        
+    # Attempt standard parse; if trailing commas exist, clean them
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        cleaned = re.sub(r',\s*([\}\]])', r'\1', text)
+        return json.loads(cleaned)
+
+async def _generate_content(prompt: str, system_message: str = "You are a helpful assistant.", is_json: bool = False) -> str:
     last_error = None
     
-    # 1. Try Groq with active models
+    # 1. Try Groq with active models and JSON mode
     groq = get_groq_client()
     if groq:
-        # Try primary recommended Groq models
         for model_name in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "llama-3.3-70b-specdec"]:
             try:
-                chat_completion = groq.chat.completions.create(
-                    messages=[
+                kwargs = {
+                    "messages": [
                         {"role": "system", "content": system_message},
                         {"role": "user", "content": prompt}
                     ],
-                    model=model_name,
-                )
-                return chat_completion.choices[0].message.content
+                    "model": model_name,
+                    "temperature": 0.5,
+                }
+                if is_json:
+                    kwargs["response_format"] = {"type": "json_object"}
+                
+                chat_completion = groq.chat.completions.create(**kwargs)
+                content = chat_completion.choices[0].message.content
+                if content:
+                    return content
             except Exception as e:
                 last_error = e
                 logger.warning(f"Groq model {model_name} failed: {e}")
@@ -58,7 +93,8 @@ async def _generate_content(prompt: str, system_message: str = "You are a helpfu
     gemini = get_gemini_model()
     if gemini:
         try:
-            response = gemini.generate_content(f"{system_message}\n\n{prompt}")
+            full_prompt = f"{system_message}\n\n{prompt}"
+            response = gemini.generate_content(full_prompt)
             if hasattr(response, 'text') and response.text:
                 return response.text
         except Exception as e:
@@ -87,64 +123,64 @@ def estimate_metabolism(profile: UserProfile, latest_metric: HealthMetric = None
 
 async def generate_diet_plan(profile: UserProfile, calories_target: int) -> dict:
     prompt = f"""
-    You are an expert AI Dietitian. Generate a 7-day meal plan for a {profile.age} year old {profile.gender}, 
+    You are an expert AI Dietitian. Generate a concise 7-day meal plan for a {profile.age} year old {profile.gender}, 
     weighing {profile.weight}kg with a goal of {profile.fitness_goal}. 
-    Dietary preference: {profile.dietary_preference}. Allergies: {profile.allergies}. 
+    Dietary preference: {profile.dietary_preference}. Allergies: {profile.allergies or 'None'}. 
     Daily calorie target: {calories_target}.
     
-    Return strictly as a JSON object with this structure:
+    Keep meal names concise and strictly output valid JSON with this exact structure:
     {{
       "days": [
         {{
           "day": "Monday",
           "meals": [
-            {{"type": "Breakfast", "name": "...", "calories": 0, "macros": {{"p":0, "c":0, "f":0}}}},
-            ...
+            {{"type": "Breakfast", "name": "Oatmeal with almonds & berries", "calories": 400, "macros": {{"p": 15, "c": 60, "f": 10}}}},
+            {{"type": "Lunch", "name": "Quinoa salad with chickpeas", "calories": 600, "macros": {{"p": 25, "c": 80, "f": 15}}}},
+            {{"type": "Snack", "name": "Greek yogurt with honey", "calories": 200, "macros": {{"p": 15, "c": 20, "f": 5}}}},
+            {{"type": "Dinner", "name": "Grilled tofu with brown rice & veggies", "calories": 800, "macros": {{"p": 35, "c": 90, "f": 20}}}}
           ]
         }}
       ]
     }}
-    Do not wrap with markdown code blocks. Just output raw JSON.
+    Include all 7 days (Monday through Sunday). Output raw JSON only.
     """
     try:
-        text = await _generate_content(prompt, "You are a specialized nutritionist AI.")
-        text = text.strip()
-        if text.startswith('```json'):
-            text = text[7:-3]
-        elif text.startswith('```'):
-            text = text[3:-3]
-        return json.loads(text.strip())
+        text = await _generate_content(prompt, "You are a specialized nutritionist AI. Output valid JSON only.", is_json=True)
+        data = parse_json_safely(text)
+        if "days" not in data and "plan" in data and "days" in data["plan"]:
+            data = data["plan"]
+        return data
     except Exception as e:
         logger.error(f"Diet Generation Error: {e}")
         return {"error": get_friendly_error(e)}
 
 async def generate_workout_plan(profile: UserProfile) -> dict:
     prompt = f"""
-    You are an expert AI Personal Trainer. Design a workout plan for {profile.age} year old, 
-    level: {profile.activity_level}, goal: {profile.fitness_goal}, conditions: {profile.medical_conditions}.
+    You are an expert AI Personal Trainer. Design a concise 7-day workout routine for {profile.age} year old, 
+    level: {profile.activity_level}, goal: {profile.fitness_goal}, conditions: {profile.medical_conditions or 'None'}.
     
-    Return strictly as a JSON object:
+    Keep descriptions concise and strictly output valid JSON with this exact structure:
     {{
       "workouts": [
         {{
           "day": "Day 1",
-          "focus": "Full Body",
+          "focus": "Upper Body Push",
           "exercises": [
-            {{"name": "...", "sets": 3, "reps": "10-12", "rest_seconds": 60, "tips": "..."}}
+            {{"name": "Bench Press", "sets": 3, "reps": "8-10", "rest_seconds": 90, "tips": "Control descent"}},
+            {{"name": "Overhead Press", "sets": 3, "reps": "10-12", "rest_seconds": 75, "tips": "Core engaged"}},
+            {{"name": "Triceps Pushdown", "sets": 3, "reps": "12-15", "rest_seconds": 60, "tips": "Full extension"}}
           ]
         }}
       ]
     }}
-    Do not wrap with markdown code blocks. Just output raw JSON.
+    Include all 7 days. Output raw JSON only.
     """
     try:
-        text = await _generate_content(prompt, "You are a high-level fitness coach AI.")
-        text = text.strip()
-        if text.startswith('```json'):
-            text = text[7:-3]
-        elif text.startswith('```'):
-            text = text[3:-3]
-        return json.loads(text.strip())
+        text = await _generate_content(prompt, "You are a high-level fitness coach AI. Output valid JSON only.", is_json=True)
+        data = parse_json_safely(text)
+        if "workouts" not in data and "plan" in data and "workouts" in data["plan"]:
+            data = data["plan"]
+        return data
     except Exception as e:
         logger.error(f"Workout Generation Error: {e}")
         return {"error": get_friendly_error(e)}
@@ -164,16 +200,10 @@ async def analyze_nutrition(food_description: str) -> dict:
       "health_score": 0,
       "suggestion": "..."
     }}
-    Do not wrap with markdown code blocks. Just output raw JSON.
     """
     try:
-        text = await _generate_content(prompt, "You are a meal analysis AI.")
-        text = text.strip()
-        if text.startswith('```json'):
-            text = text[7:-3]
-        elif text.startswith('```'):
-            text = text[3:-3]
-        return json.loads(text.strip())
+        text = await _generate_content(prompt, "You are a meal analysis AI. Output valid JSON only.", is_json=True)
+        return parse_json_safely(text)
     except Exception as e:
         logger.error(f"Nutrition Analysis Error: {e}")
         return {"error": get_friendly_error(e)}
@@ -197,7 +227,7 @@ async def chat_with_coach(profile: UserProfile, message: str) -> str:
     )
     
     try:
-        return await _generate_content(prompt, system_msg)
+        return await _generate_content(prompt, system_msg, is_json=False)
     except Exception as e:
         logger.error(f"Chat Error: {e}")
         return get_friendly_error(e)

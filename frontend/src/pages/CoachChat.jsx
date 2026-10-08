@@ -3,12 +3,49 @@ import Layout from '../components/Layout';
 import api from '../api/client';
 import { Send, Bot, User, Trash2 } from 'lucide-react';
 
+function cleanLatex(text) {
+    if (!text) return "";
+    let str = text;
+    // Replace \frac{a}{b} with (a / b)
+    str = str.replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '($1 / $2)');
+    // Strip LaTeX text / formatting wrappers
+    str = str.replace(/\\(?:text|mathrm|mathbf|textbf|mathit|textnormal)\{([^}]+)\}/g, '$1');
+    // Replace mathematical symbols
+    str = str.replace(/\\times/g, '×');
+    str = str.replace(/\\cdot/g, '·');
+    str = str.replace(/\\approx/g, '≈');
+    str = str.replace(/\\le(?:q)?\b/g, '≤');
+    str = str.replace(/\\ge(?:q)?\b/g, '≥');
+    str = str.replace(/\\neq\b/g, '≠');
+    str = str.replace(/\\pm\b/g, '±');
+    str = str.replace(/\\div\b/g, '÷');
+    str = str.replace(/\\left\(/g, '(').replace(/\\right\)/g, ')');
+    str = str.replace(/\\left\[/g, '[').replace(/\\right\]/g, ']');
+    str = str.replace(/\\quad/g, '  ');
+    str = str.replace(/\\[,;\s]/g, ' ');
+    // Remove leftover backslashes
+    str = str.replace(/\\([a-zA-Z]+)/g, '$1');
+    return str;
+}
+
+function cleanInlineMath(str) {
+    if (!str) return str;
+    let s = str;
+    // Convert \( ... \)
+    s = s.replace(/\\\((.*?)\\\)/g, (m, g1) => cleanLatex(g1));
+    // Convert inline $...$
+    s = s.replace(/\$([^\$\n]+)\$/g, (m, g1) => cleanLatex(g1));
+    return cleanLatex(s);
+}
+
 function FormattedText({ text }) {
     if (!text) return null;
 
-    // Helper to render bold, italics, and code tags
     const renderInline = (str) => {
-        const tokens = str.split(/(\*\*.*?\*\*|\*.*?\*|`.*?`)/g);
+        if (!str) return null;
+        const cleanedStr = cleanInlineMath(str);
+        const tokens = cleanedStr.split(/(\*\*.*?\*\*|\*.*?\*|`.*?`)/g);
+
         return tokens.map((token, idx) => {
             if (token.startsWith('**') && token.endsWith('**')) {
                 return <strong key={idx} className="font-bold text-gray-900">{token.slice(2, -2)}</strong>;
@@ -21,22 +58,24 @@ function FormattedText({ text }) {
         });
     };
 
-    const lines = text.split('\n');
+    const rawLines = text.split('\n');
     const elements = [];
     let inTable = false;
     let tableRows = [];
+    let inMath = false;
+    let mathLines = [];
 
     const flushTable = () => {
         if (tableRows.length > 0) {
             const header = tableRows[0];
             const body = tableRows.slice(1);
             elements.push(
-                <div key={`table-${elements.length}`} className="my-3 overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+                <div key={`table-${elements.length}`} className="my-3 overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
                     <table className="w-full text-left text-xs border-collapse bg-white">
                         <thead className="bg-primary-50 text-primary-900 border-b border-gray-200">
                             <tr>
                                 {header.map((cell, cIdx) => (
-                                    <th key={cIdx} className="px-3 py-2 font-semibold">
+                                    <th key={cIdx} className="px-3.5 py-2.5 font-semibold">
                                         {renderInline(cell)}
                                     </th>
                                 ))}
@@ -46,7 +85,7 @@ function FormattedText({ text }) {
                             {body.map((row, rIdx) => (
                                 <tr key={rIdx} className={rIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
                                     {row.map((cell, cIdx) => (
-                                        <td key={cIdx} className="px-3 py-2 text-gray-700">
+                                        <td key={cIdx} className="px-3.5 py-2 text-gray-700">
                                             {renderInline(cell)}
                                         </td>
                                     ))}
@@ -60,14 +99,66 @@ function FormattedText({ text }) {
         }
     };
 
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
+    const flushMath = () => {
+        if (mathLines.length > 0) {
+            const mathContent = mathLines.map(cleanLatex).join('\n').trim();
+            if (mathContent) {
+                elements.push(
+                    <div
+                        key={`math-${elements.length}`}
+                        className="my-2.5 px-4 py-3 bg-emerald-50/80 border border-emerald-200/80 rounded-xl font-mono text-emerald-950 text-xs sm:text-sm overflow-x-auto shadow-sm whitespace-pre-wrap leading-relaxed tracking-wide"
+                    >
+                        {mathContent}
+                    </div>
+                );
+            }
+            mathLines = [];
+        }
+    };
 
-        // Detect Markdown Tables (| col | col |)
+    for (let i = 0; i < rawLines.length; i++) {
+        let line = rawLines[i].trim();
+
+        // Check for math block start/end: \[ ... \] or $$ ... $$
+        if (line === '\\[' || line === '$$') {
+            if (inTable) { inTable = false; flushTable(); }
+            inMath = true;
+            mathLines = [];
+            continue;
+        }
+        if (line === '\\]' || (inMath && line === '$$')) {
+            inMath = false;
+            flushMath();
+            continue;
+        }
+        if (line.startsWith('\\[') && line.endsWith('\\]')) {
+            if (inTable) { inTable = false; flushTable(); }
+            const inner = line.slice(2, -2).trim();
+            elements.push(
+                <div
+                    key={`math-${elements.length}`}
+                    className="my-2.5 px-4 py-3 bg-emerald-50/80 border border-emerald-200/80 rounded-xl font-mono text-emerald-950 text-xs sm:text-sm overflow-x-auto shadow-sm whitespace-pre-wrap leading-relaxed tracking-wide"
+                >
+                    {cleanLatex(inner)}
+                </div>
+            );
+            continue;
+        }
+        if (inMath) {
+            if (line.endsWith('\\]')) {
+                mathLines.push(line.slice(0, -2));
+                inMath = false;
+                flushMath();
+            } else {
+                mathLines.push(line);
+            }
+            continue;
+        }
+
+        // Detect Markdown Tables
         if (line.startsWith('|') && line.endsWith('|')) {
             inTable = true;
             const cells = line.split('|').slice(1, -1).map(c => c.trim());
-            // Ignore separator rows (|---|---|)
             if (!cells.every(c => /^[-:]+$/.test(c))) {
                 tableRows.push(cells);
             }
@@ -137,9 +228,8 @@ function FormattedText({ text }) {
         }
     }
 
-    if (inTable) {
-        flushTable();
-    }
+    if (inTable) flushTable();
+    if (inMath) flushMath();
 
     return <div className="space-y-0.5 text-sm">{elements}</div>;
 }
@@ -236,7 +326,7 @@ export default function CoachChat() {
 
                         {messages.map((msg, idx) => (
                             <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`flex gap-3 max-w-[85%] md:max-w-[75%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                <div className={`flex gap-3 max-w-[88%] md:max-w-[80%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
                                     <div className={`flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center ${msg.role === 'user'
                                         ? 'bg-primary-600 text-white shadow-sm'
                                         : 'bg-white border border-gray-200 text-primary-600 shadow-sm'
